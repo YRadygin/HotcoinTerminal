@@ -11,6 +11,7 @@ public sealed partial class AnalyticsPage : Page
 {
     private readonly ObservableCollection<SignalRow> _visibleSignals = new();
     private readonly ObservableCollection<EventItem> _events = new();
+    private IReadOnlyList<EventItem> _allEvents = Array.Empty<EventItem>();
     private IReadOnlyList<SignalRow> _allSignals = Array.Empty<SignalRow>();
     private readonly HashSet<string> _activeStrategies = new() { "Grid", "Mean Rev", "Momentum", "События" };
     private string _searchText = "";
@@ -23,6 +24,7 @@ public sealed partial class AnalyticsPage : Page
 
         SignalsList.ItemsSource = _visibleSignals;
         EventsList.ItemsSource = _events; // лента событий 
+
 
         Loaded += (_, _) =>
         {
@@ -52,11 +54,28 @@ public sealed partial class AnalyticsPage : Page
     {
         DispatcherQueue.TryEnqueue(() =>
         {
-            _events.Clear();
-            foreach (var e in events) _events.Add(e);
+            _allEvents = events;
+            RefreshEventsFilter();
         });
     }
 
+    /// <summary>Вкл (зелёный) — вся лента; выкл (красный) — только анонсы биржи.</summary>
+    private void RefreshEventsFilter()
+    {
+        bool showAll = EventsFilterToggle.IsChecked == true;
+        _events.Clear();
+        foreach (var e in _allEvents)
+            if (showAll || e.Tag == "События")
+                _events.Add(e);
+    }
+
+    private void OnEventsFilterToggle(object sender, RoutedEventArgs e)
+    {
+        EventsFilterToggle.Foreground = EventsFilterToggle.IsChecked == true
+            ? Helpers.Palette.UpBrush
+            : Helpers.Palette.DownBrush;
+        RefreshEventsFilter();
+    }
 
     // ---------- Приём данных из MarketDataService (фоновый поток -> UI-поток) ----------
 

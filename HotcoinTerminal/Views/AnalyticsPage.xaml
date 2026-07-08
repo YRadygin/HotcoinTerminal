@@ -164,6 +164,11 @@
                 <Grid Grid.Row="0">
                     <TextBlock Text="Лента событий" Style="{StaticResource PanelTitle}" FontSize="15" />
                     <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right">
+                        <ToggleButton x:Name="EventsFilterToggle" IsChecked="True"
+                                      Click="OnEventsFilterToggle"
+                                      Content="События стратегий" FontSize="11" Padding="8,2"
+                                      Foreground="{StaticResource UpBrush}"
+                                      VerticalAlignment="Center" />
                         <Ellipse Width="8" Height="8" Fill="{StaticResource UpBrush}" VerticalAlignment="Center" />
                         <TextBlock Text="live" Style="{StaticResource CaptionText}" VerticalAlignment="Center" />
                     </StackPanel>

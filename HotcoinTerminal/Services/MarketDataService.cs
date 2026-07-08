@@ -25,6 +25,7 @@ public sealed class MarketDataService
     private readonly HotcoinPublicClient _client = new();
     private readonly StrategyEngine _engine;
     private readonly EventFeedService _eventFeed = new();
+    private readonly AnnouncementFeedService _announcements = new();
 
     private HashSet<string> _onlineUsdtSymbols = new();
     private readonly Dictionary<string, TickerInfo> _lastTickers = new();
@@ -49,6 +50,10 @@ public sealed class MarketDataService
         // Движку отдаём «сырой» метод клиента: у движка свой кэш (TTL 5 мин),
         // а _klineCache с TTL 60с остаётся для графика (там нужна свежесть).
         _engine = new StrategyEngine((symbol, step, ct) => _client.GetKlinesAsync(symbol, step, ct: ct));
+
+        // Анонсы биржи вливаются в общую ленту событий
+        _announcements.AnnouncementsArrived += items =>
+            EventsUpdated?.Invoke(_eventFeed.AddExternal(items));
     }
 
     // ---------------- Публичный интерфейс ----------------
@@ -57,6 +62,7 @@ public sealed class MarketDataService
     public void Start()
     {
         _loop ??= Task.Run(RunLoopAsync);
+        _announcements.Start();
     }
 
     /// <summary>Принудительное обновление вне расписания (кнопка «обновить»).</summary>

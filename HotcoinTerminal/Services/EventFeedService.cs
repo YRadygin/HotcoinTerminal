@@ -79,4 +79,23 @@ public sealed class EventFeedService
 
     private static EventItem Make(string time, string message, string tag) =>
         new() { Time = time, Message = message, Tag = tag };
+
+    /// <summary>
+    /// Внешние события (анонсы биржи и т.п.) — добавляются в общий буфер сверху.
+    /// Возвращает актуальную ленту для публикации подписчикам.
+    /// </summary>
+    public IReadOnlyList<EventItem> AddExternal(IReadOnlyList<EventItem> events)
+    {
+        lock (_lock)
+        {
+            // Добавляем в обратном порядке, чтобы самый свежий оказался первым в ленте
+            for (int i = events.Count - 1; i >= 0; i--)
+                _feed.AddFirst(events[i]);
+
+            while (_feed.Count > MaxEvents)
+                _feed.RemoveLast();
+
+            return _feed.ToList();
+        }
+    }
 }
