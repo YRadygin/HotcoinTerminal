@@ -22,6 +22,11 @@ public sealed partial class AnalyticsPage : Page
     {
         InitializeComponent();
 
+        // Один экземпляр страницы на всё время жизни приложения:
+        // без этого каждый возврат на вкладку создавал бы новый WebView2
+        // (и новый процесс msedgewebview2.exe) — классическая утечка.
+        NavigationCacheMode = Microsoft.UI.Xaml.Navigation.NavigationCacheMode.Required;
+
         SignalsList.ItemsSource = _visibleSignals;
         EventsList.ItemsSource = _events; // лента событий 
 
@@ -165,11 +170,93 @@ public sealed partial class AnalyticsPage : Page
 
             // Пока грузили, пользователь мог кликнуть другую пару — не перерисовываем чужое
             if (candles.Count > 0 && PairTitle.Text == pair)
-                Chart.SetCandles(candles);
+            {
+                Chart.SetCandles(pair, candles);
+                SyncIndicatorToggles(pair);
+            }
         }
         catch (Exception ex)
         {
             ScreenerStatus.Text = $"Свечи не загрузились: {ex.Message}";
+        }
+    }
+
+    // ---------- Поиск по всем парам Hotcoin (не только из скринера) ----------
+
+    private void OnPairSearchTextChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args)
+    {
+        if (args.Reason != AutoSuggestionBoxTextChangeReason.UserInput) return;
+
+        var query = sender.Text.Trim();
+        sender.ItemsSource = query.Length == 0
+            ? null
+            : MarketDataService.Instance.GetAllPairs()
+                .Where(p => p.Contains(query, StringComparison.OrdinalIgnoreCase))
+                .Take(12)
+                .ToList();
+    }
+
+    private void OnPairSearchChosen(AutoSuggestBox sender, AutoSuggestBoxSuggestionChosenEventArgs args)
+    {
+        if (args.SelectedItem is string pair) _ = ShowPairAsync(pair);
+    }
+
+    private void OnPairSearchSubmitted(AutoSuggestBox sender, AutoSuggestBoxQuerySubmittedEventArgs args)
+    {
+        var pair = args.ChosenSuggestion as string
+                   ?? MarketDataService.Instance.GetAllPairs()
+                       .FirstOrDefault(p => p.Contains(sender.Text.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (pair is not null) _ = ShowPairAsync(pair);
+    }
+
+    /// <summary>Открыть произвольную пару на графике (в обход выбора в скринере).</summary>
+    private async Task ShowPairAsync(string pair)
+    {
+        PairSearchBox.Text = "";
+        SignalsList.SelectedItem = null; // визуально отвязываем от скринера
+
+        PairTitle.Text = pair;
+        var ticker = MarketDataService.Instance.TryGetTicker(pair);
+        if (ticker is not null)
+        {
+            PairPrice.Text = FormatPrice(ticker.Last);
+            var brush = ticker.Change >= 0 ? Helpers.Palette.UpBrush : Helpers.Palette.DownBrush;
+            PairChange.Text = (ticker.Change >= 0 ? "+" : "") + ticker.Change.ToString("0.0") + "%";
+            PairChange.Foreground = brush;
+            PairPrice.Foreground = brush;
+        }
+        else
+        {
+            PairPrice.Text = "—";
+            PairChange.Text = "";
+        }
+
+        await LoadKlinesAsync(pair);
+    }
+
+    // ---------- Индикаторы (галочки в меню = раскладка текущей пары) ----------
+
+    private void OnIndicatorToggle(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ToggleMenuFlyoutItem { Tag: string tag } item) return;
+
+        // Tag: "id|type|paramsJson"
+        var parts = tag.Split('|', 3);
+        if (parts.Length != 3) return;
+
+        if (item.IsChecked) Chart.AddIndicator(parts[0], parts[1], parts[2]);
+        else Chart.RemoveIndicator(parts[0]);
+    }
+
+    /// <summary>После смены пары выставить галочки по её сохранённой раскладке.</summary>
+    private void SyncIndicatorToggles(string pair)
+    {
+        var layout = ChartSettingsStore.Instance.LoadLayout(pair) ?? ChartSettingsStore.DefaultLayout;
+
+        foreach (var item in new[] { IndMa10, IndMa20, IndEma50, IndBB, IndRsi14 })
+        {
+            var id = (item.Tag as string)?.Split('|', 2)[0] ?? "";
+            item.IsChecked = layout.Contains($"\"{id}\"", StringComparison.Ordinal);
         }
     }
 

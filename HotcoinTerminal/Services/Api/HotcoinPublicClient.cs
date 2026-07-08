@@ -63,7 +63,7 @@ public sealed class HotcoinPublicClient
     /// GET /v1/ticker?symbol=..&step=.. — свечи. Формат элемента: [время, O, H, L, C, объём].
     /// step в секундах: 60, 300, 900, 1800, 3600, 86400. Лимит: 20 зап/с.
     /// </summary>
-    public async Task<List<Candle>> GetKlinesAsync(string symbol, int stepSeconds, int maxCount = 120,
+    public async Task<List<Candle>> GetKlinesAsync(string symbol, int stepSeconds, int maxCount = 1000,
         CancellationToken ct = default)
     {
         using var doc = await GetJsonAsync(
@@ -77,6 +77,7 @@ public sealed class HotcoinPublicClient
         {
             if (row.ValueKind != JsonValueKind.Array || row.GetArrayLength() < 6) continue;
 
+            long time = ParseKlineTime(Num(row[0]));
             double o = Num(row[1]), h = Num(row[2]), l = Num(row[3]), c = Num(row[4]), v = Num(row[5]);
 
             // Нормализация на случай иного порядка O/H/L/C в ответе:
@@ -84,14 +85,55 @@ public sealed class HotcoinPublicClient
             double high = Math.Max(Math.Max(o, c), Math.Max(h, l));
             double low = Math.Min(Math.Min(o, c), Math.Min(h, l));
 
-            candles.Add(new Candle { Open = o, High = high, Low = low, Close = c, Volume = v });
+            candles.Add(new Candle { TimeSec = time, Open = o, High = high, Low = low, Close = c, Volume = v });
         }
+
+        // Графику нужны строго возрастающие времена без дублей
+        candles = candles
+            .Where(x => x.TimeSec > 0)
+            .GroupBy(x => x.TimeSec)
+            .Select(g => g.Last())
+            .OrderBy(x => x.TimeSec)
+            .ToList();
 
         // Хвост последних maxCount свечей
         if (candles.Count > maxCount)
             candles = candles.GetRange(candles.Count - maxCount, maxCount);
 
         return candles;
+    }
+
+    /// <summary>
+    /// Время свечи из API -> unix-секунды. Биржи присылают время в разных видах,
+    /// определяем по порядку величины:
+    ///   ~1.7e9  — unix-секунды (как есть),
+    ///   ~1.7e12 — unix-миллисекунды (/1000),
+    ///   ~2.0e11 — форматированное yyyyMMddHHmm,
+    ///   ~2.0e13 — форматированное yyyyMMddHHmmss.
+    /// </summary>
+    private static long ParseKlineTime(double raw)
+    {
+        if (raw <= 0) return 0;
+
+        if (raw < 1e10) return (long)raw;                    // unix-секунды
+        if (raw is >= 1e12 and < 1e13) return (long)(raw / 1000); // unix-мс
+
+        // Форматированная дата числом
+        var s = ((long)raw).ToString(CultureInfo.InvariantCulture);
+        string format = s.Length switch
+        {
+            12 => "yyyyMMddHHmm",
+            14 => "yyyyMMddHHmmss",
+            8 => "yyyyMMdd",
+            _ => ""
+        };
+        if (format.Length > 0 &&
+            DateTime.TryParseExact(s, format, CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var dt))
+        {
+            return new DateTimeOffset(dt).ToUnixTimeSeconds();
+        }
+        return 0;
     }
 
     // ---------------- Внутреннее ----------------

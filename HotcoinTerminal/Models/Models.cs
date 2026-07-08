@@ -3,9 +3,12 @@ using HotcoinTerminal.Helpers;
 
 namespace HotcoinTerminal.Models;
 
-/// <summary>Свеча OHLCV (заглушка, позже придёт из API биржи).</summary>
+/// <summary>Свеча OHLCV.</summary>
 public sealed class Candle
 {
+    /// <summary>Время открытия свечи, unix-секунды UTC (нужно графику).</summary>
+    public long TimeSec { get; init; }
+
     public double Open { get; init; }
     public double High { get; init; }
     public double Low { get; init; }

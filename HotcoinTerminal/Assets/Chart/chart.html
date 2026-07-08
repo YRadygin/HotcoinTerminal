@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
+               background: transparent; }
+  #chart { position: absolute; inset: 0; }
+  /* Легенда индикаторов в левом верхнем углу */
+  #legend { position: absolute; top: 6px; left: 44px; z-index: 10;
+            font: 11px 'Segoe UI', sans-serif; color: #96A2B6;
+            pointer-events: none; }
+  #legend span { margin-right: 12px; }
+
+  /* Панель инструментов рисования */
+  #toolbar { position: absolute; top: 6px; left: 6px; z-index: 20;
+             display: flex; flex-direction: column; gap: 4px; }
+  #toolbar button {
+    width: 30px; height: 30px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.10);
+    background: rgba(20,24,34,0.85); color: #96A2B6; font: 14px 'Segoe UI', sans-serif;
+    cursor: pointer; padding: 0; line-height: 1;
+  }
+  #toolbar button:hover { color: #E8EEF6; border-color: rgba(139,124,246,0.6); }
+  #toolbar button.active { color: #8B7CF6; border-color: #8B7CF6; background: rgba(139,124,246,0.15); }
+</style>
+<script src="lightweight-charts.js"></script>
+</head>
+<body>
+<div id="chart"></div>
+<div id="toolbar">
+  <button id="tool-cursor" class="active" title="Курсор">✛</button>
+  <button id="tool-trend"  title="Трендовая линия (2 клика)">╱</button>
+  <button id="tool-hline"  title="Горизонтальный уровень (1 клик)">─</button>
+  <button id="tool-rect"   title="Прямоугольник / зона (2 клика)">▭</button>
+  <button id="tool-fib"    title="Сетка Фибоначчи (2 клика)">ƒ</button>
+  <button id="tool-erase"  title="Ластик: клик по фигуре удаляет её">⌫</button>
+  <button id="tool-clear"  title="Удалить все построения на этой паре">✕</button>
+</div>
+<div id="legend"></div>
+<script>
+"use strict";
+
+// ======================= Палитра (синхронизирована с Palette.cs) =======================
+const C = {
+  up:      "#2DD4BF",
+  down:    "#F87171",
+  accent:  "#8B7CF6",
+  text:    "#96A2B6",
+  grid:    "rgba(255,255,255,0.06)",
+  border:  "rgba(255,255,255,0.10)",
+  volUp:   "rgba(45,212,191,0.35)",
+  volDown: "rgba(248,113,113,0.35)"
+};
+
+// ======================= Создание графика =======================
+const LWC = LightweightCharts;
+const chart = LWC.createChart(document.getElementById("chart"), {
+  autoSize: true,
+  layout: {
+    background: { type: "solid", color: "transparent" },
+    textColor: C.text,
+    fontFamily: "'Segoe UI', sans-serif",
+    panes: { separatorColor: C.border, separatorHoverColor: C.accent, enableResize: true }
+  },
+  grid: {
+    vertLines: { color: C.grid },
+    horzLines: { color: C.grid }
+  },
+  crosshair: {
+    mode: LWC.CrosshairMode.Normal,
+    vertLine: { color: C.accent, width: 1, style: LWC.LineStyle.Dashed, labelBackgroundColor: C.accent },
+    horzLine: { color: C.accent, width: 1, style: LWC.LineStyle.Dashed, labelBackgroundColor: C.accent }
+  },
+  rightPriceScale: { borderColor: C.border },
+  timeScale: {
+    borderColor: C.border,
+    timeVisible: true,
+    secondsVisible: false,
+    rightOffset: 4
+  },
+  localization: { locale: "ru-RU" }
+});
+
+// Свечи (панель 0)
+const candleSeries = chart.addSeries(LWC.CandlestickSeries, {
+  upColor: C.up, downColor: C.down,
+  borderUpColor: C.up, borderDownColor: C.down,
+  wickUpColor: C.up, wickDownColor: C.down
+});
+
+// Объём — оверлей внизу той же панели
+const volumeSeries = chart.addSeries(LWC.HistogramSeries, {
+  priceScaleId: "vol",
+  priceFormat: { type: "volume" },
+  lastValueVisible: false,
+  priceLineVisible: false
+});
+chart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+
+// ======================= Состояние =======================
+let candles = [];          // [{time, open, high, low, close, volume}]
+let indicators = {};       // id -> { type, params, series }
+let priceLines = [];       // уровни пользователя: [{ id, price, line }]
+let symbol = "";
+
+// ======================= Построения (рисование) =======================
+// Каждая фигура: { id, type: 'trend'|'rect'|'fib', p1: {time, price}, p2: {time, price} }
+// Точки привязаны к времени свечи и цене — переживают зум/пан/смену таймфрейма.
+let drawings = [];
+let pending = null;        // недорисованная фигура (первый клик сделан)
+let activeTool = "cursor";
+
+const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+
+// --- Отрисовщик: официальный механизм series primitives (LWC v5) ---
+let requestPrimUpdate = () => {};
+
+const drawingsRenderer = {
+  draw(target) {
+    target.useMediaCoordinateSpace(scope => {
+      const ctx = scope.context;
+      const list = pending ? drawings.concat([pending]) : drawings;
+      for (const d of list) drawShape(ctx, d, scope.mediaSize);
+    });
+  }
+};
+const drawingsPaneView = { zOrder: () => "top", renderer: () => drawingsRenderer };
+const drawingsPrimitive = {
+  attached(p) { requestPrimUpdate = p.requestUpdate; },
+  detached() { requestPrimUpdate = () => {}; },
+  updateAllViews() {},
+  paneViews() { return [drawingsPaneView]; }
+};
+candleSeries.attachPrimitive(drawingsPrimitive);
+
+function toXY(pt) {
+  const x = chart.timeScale().timeToCoordinate(pt.time);
+  const y = candleSeries.priceToCoordinate(pt.price);
+  return (x === null || y === null) ? null : { x, y };
+}
+
+function drawShape(ctx, d, size) {
+  const a = toXY(d.p1), b = d.p2 ? toXY(d.p2) : a;
+  if (!a || !b) return; // якорь за пределами загруженных данных — не рисуем
+
+  ctx.save();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = C.accent;
+  ctx.font = "10px 'Segoe UI', sans-serif";
+
+  if (d.type === "trend") {
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  else if (d.type === "rect") {
+    const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+    const w = Math.abs(b.x - a.x), h = Math.abs(b.y - a.y);
+    ctx.fillStyle = "rgba(139,124,246,0.12)";
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeRect(x, y, w, h);
+  }
+  else if (d.type === "fib") {
+    const x1 = Math.min(a.x, b.x), x2 = Math.max(a.x, b.x);
+    for (const lvl of FIB_LEVELS) {
+      const price = d.p1.price + (d.p2.price - d.p1.price) * lvl;
+      const y = candleSeries.priceToCoordinate(price);
+      if (y === null) continue;
+      ctx.strokeStyle = lvl === 0 || lvl === 1 ? C.accent : "rgba(139,124,246,0.55)";
+      ctx.beginPath();
+      ctx.moveTo(x1, y);
+      ctx.lineTo(x2, y);
+      ctx.stroke();
+      ctx.fillStyle = C.text;
+      ctx.fillText(lvl.toFixed(3) + "  " + formatPrice(price), x2 + 4, y + 3);
+    }
+  }
+  ctx.restore();
+}
+
+function formatPrice(p) {
+  if (p >= 1000) return p.toFixed(1);
+  if (p >= 1)    return p.toFixed(4);
+  return p.toPrecision(4);
+}
+
+// --- Попадание клика в фигуру (для ластика), допуск в пикселях ---
+function hitTest(point) {
+  const TOL = 6;
+  for (let i = drawings.length - 1; i >= 0; i--) {
+    const d = drawings[i];
+    const a = toXY(d.p1), b = toXY(d.p2);
+    if (!a || !b) continue;
+
+    if (d.type === "trend" &&
+        distToSegment(point, a, b) < TOL) return i;
+
+    if (d.type === "rect" &&
+        point.x >= Math.min(a.x, b.x) - TOL && point.x <= Math.max(a.x, b.x) + TOL &&
+        point.y >= Math.min(a.y, b.y) - TOL && point.y <= Math.max(a.y, b.y) + TOL) return i;
+
+    if (d.type === "fib") {
+      const x1 = Math.min(a.x, b.x) - TOL, x2 = Math.max(a.x, b.x) + TOL;
+      if (point.x < x1 || point.x > x2) continue;
+      for (const lvl of FIB_LEVELS) {
+        const y = candleSeries.priceToCoordinate(d.p1.price + (d.p2.price - d.p1.price) * lvl);
+        if (y !== null && Math.abs(point.y - y) < TOL) return i;
+      }
+    }
+  }
+  return -1;
+}
+
+function distToSegment(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1,
+    ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+  const px = a.x + t * dx, py = a.y + t * dy;
+  return Math.hypot(p.x - px, p.y - py);
+}
+
+// --- Панель инструментов ---
+const TOOL_IDS = ["cursor", "trend", "hline", "rect", "fib", "erase"];
+for (const id of TOOL_IDS) {
+  document.getElementById("tool-" + id).addEventListener("click", () => setTool(id));
+}
+document.getElementById("tool-clear").addEventListener("click", () => {
+  drawings = [];
+  pending = null;
+  window.chartApi.clearPriceLines();
+  requestPrimUpdate();
+  notifyLayoutChanged();
+});
+
+function setTool(id) {
+  activeTool = id;
+  pending = null;
+  for (const t of TOOL_IDS)
+    document.getElementById("tool-" + t).classList.toggle("active", t === id);
+  document.getElementById("chart").style.cursor =
+    id === "cursor" ? "default" : "crosshair";
+  requestPrimUpdate();
+}
+
+// Esc — отмена недорисованной фигуры и возврат к курсору
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") setTool("cursor");
+});
+
+function notifyLayoutChanged() {
+  post({ type: "layoutChanged", symbol, layout: window.chartApi.getLayout() });
+}
+
+// ======================= Индикаторы (расчёт на месте) =======================
+function calcSma(data, period) {
+  const out = [];
+  let sum = 0;
+  for (let i = 0; i < data.length; i++) {
+    sum += data[i].close;
+    if (i >= period) sum -= data[i - period].close;
+    if (i >= period - 1) out.push({ time: data[i].time, value: sum / period });
+  }
+  return out;
+}
+
+function calcEma(data, period) {
+  const out = [];
+  const k = 2 / (period + 1);
+  let ema = 0;
+  for (let i = 0; i < data.length; i++) {
+    ema = i === 0 ? data[i].close : data[i].close * k + ema * (1 - k);
+    if (i >= period - 1) out.push({ time: data[i].time, value: ema });
+  }
+  return out;
+}
+
+function calcRsi(data, period) {
+  const out = [];
+  let gain = 0, loss = 0;
+  for (let i = 1; i < data.length; i++) {
+    const d = data[i].close - data[i - 1].close;
+    const g = Math.max(d, 0), l = Math.max(-d, 0);
+    if (i <= period) { gain += g; loss += l; if (i === period) { gain /= period; loss /= period; } }
+    else { gain = (gain * (period - 1) + g) / period; loss = (loss * (period - 1) + l) / period; }
+    if (i >= period) {
+      const rsi = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
+      out.push({ time: data[i].time, value: rsi });
+    }
+  }
+  return out;
+}
+
+function calcBollinger(data, period, mult) {
+  const upper = [], lower = [], mid = [];
+  for (let i = period - 1; i < data.length; i++) {
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) sum += data[j].close;
+    const avg = sum / period;
+    let variance = 0;
+    for (let j = i - period + 1; j <= i; j++) variance += (data[j].close - avg) ** 2;
+    const sd = Math.sqrt(variance / period);
+    mid.push({ time: data[i].time, value: avg });
+    upper.push({ time: data[i].time, value: avg + mult * sd });
+    lower.push({ time: data[i].time, value: avg - mult * sd });
+  }
+  return { upper, lower, mid };
+}
+
+// Конструкторы серий под каждый тип индикатора.
+// paneIndex 0 = поверх цены, 1+ = отдельная панель снизу.
+const INDICATOR_DEFS = {
+  ma: {
+    label: p => `MA(${p.period})`,
+    create: (p) => {
+      const s = chart.addSeries(LWC.LineSeries,
+        { color: p.color || C.accent, lineWidth: 1.5, lastValueVisible: false, priceLineVisible: false }, 0);
+      return { series: [s], update: d => s.setData(calcSma(d, p.period)) };
+    }
+  },
+  ema: {
+    label: p => `EMA(${p.period})`,
+    create: (p) => {
+      const s = chart.addSeries(LWC.LineSeries,
+        { color: p.color || "#F6C177", lineWidth: 1.5, lastValueVisible: false, priceLineVisible: false }, 0);
+      return { series: [s], update: d => s.setData(calcEma(d, p.period)) };
+    }
+  },
+  bollinger: {
+    label: p => `BB(${p.period}, ${p.mult})`,
+    create: (p) => {
+      const opts = { lineWidth: 1, lastValueVisible: false, priceLineVisible: false };
+      const u = chart.addSeries(LWC.LineSeries, { ...opts, color: "rgba(139,124,246,0.7)" }, 0);
+      const l = chart.addSeries(LWC.LineSeries, { ...opts, color: "rgba(139,124,246,0.7)" }, 0);
+      const m = chart.addSeries(LWC.LineSeries, { ...opts, color: "rgba(139,124,246,0.35)" }, 0);
+      return {
+        series: [u, l, m],
+        update: d => {
+          const b = calcBollinger(d, p.period, p.mult);
+          u.setData(b.upper); l.setData(b.lower); m.setData(b.mid);
+        }
+      };
+    }
+  },
+  rsi: {
+    label: p => `RSI(${p.period})`,
+    create: (p) => {
+      // Отдельная панель. Индекс = число уже занятых панелей.
+      const paneIndex = chart.panes().length;
+      const s = chart.addSeries(LWC.LineSeries,
+        { color: p.color || C.accent, lineWidth: 1.5, lastValueVisible: true, priceLineVisible: false },
+        paneIndex);
+      s.createPriceLine({ price: 70, color: "rgba(248,113,113,0.4)", lineWidth: 1, lineStyle: LWC.LineStyle.Dashed, axisLabelVisible: false });
+      s.createPriceLine({ price: 30, color: "rgba(45,212,191,0.4)", lineWidth: 1, lineStyle: LWC.LineStyle.Dashed, axisLabelVisible: false });
+      // Явные веса панелей: без этого у основной панели вес по умолчанию мал,
+      // и RSI растягивался почти на всё окно
+      const mainPane = chart.panes()[0];
+      if (mainPane) mainPane.setStretchFactor(100);
+      const pane = chart.panes()[paneIndex];
+      if (pane) pane.setStretchFactor(22); // RSI ~18% высоты
+      return { series: [s], update: d => s.setData(calcRsi(d, p.period)) };
+    }
+  }
+};
+
+function refreshLegend() {
+  const el = document.getElementById("legend");
+  el.innerHTML = Object.values(indicators)
+    .map(i => `<span>${INDICATOR_DEFS[i.type].label(i.params)}</span>`)
+    .join("");
+}
+
+// ======================= API, вызываемое из C# =======================
+window.chartApi = {
+
+  /** Полная замена данных. candlesJson: [{t,o,h,l,c,v}], t — unix-секунды. */
+  setCandles(sym, candlesJson) {
+    symbol = sym;
+    candles = candlesJson.map(x => ({
+      time: x.t, open: x.o, high: x.h, low: x.l, close: x.c, volume: x.v
+    }));
+
+    candleSeries.setData(candles);
+    volumeSeries.setData(candles.map(c => ({
+      time: c.time, value: c.volume,
+      color: c.close >= c.open ? C.volUp : C.volDown
+    })));
+
+    for (const ind of Object.values(indicators)) ind.impl.update(candles);
+
+    // Сброс масштабов: если пользователь тянул ценовую шкалу, автомасштаб
+    // выключился и «запомнил» диапазон старой пары — при переключении
+    // BTC ($60k) -> монета за $0.4 свечи улетали за экран.
+    candleSeries.priceScale().applyOptions({ autoScale: true });
+    chart.timeScale().resetTimeScale();
+    chart.timeScale().fitContent();
+    autoPrecision();
+  },
+
+  /** Обновление/дорисовка последней свечи (для живых обновлений). */
+  updateLast(candleJson) {
+    const c = { time: candleJson.t, open: candleJson.o, high: candleJson.h,
+                low: candleJson.l, close: candleJson.c, volume: candleJson.v };
+    if (candles.length && candles[candles.length - 1].time === c.time)
+      candles[candles.length - 1] = c;
+    else candles.push(c);
+    candleSeries.update(c);
+    volumeSeries.update({ time: c.time, value: c.volume,
+      color: c.close >= c.open ? C.volUp : C.volDown });
+    for (const ind of Object.values(indicators)) ind.impl.update(candles);
+  },
+
+  /** Добавить индикатор. id — произвольный уникальный ключ. */
+  addIndicator(id, type, params) {
+    if (indicators[id] || !INDICATOR_DEFS[type]) return;
+    const impl = INDICATOR_DEFS[type].create(params);
+    indicators[id] = { type, params, impl };
+    if (candles.length) impl.update(candles);
+    refreshLegend();
+  },
+
+  removeIndicator(id) {
+    const ind = indicators[id];
+    if (!ind) return;
+    for (const s of ind.impl.series) chart.removeSeries(s);
+    delete indicators[id];
+    refreshLegend();
+  },
+
+  /** Горизонтальный уровень (цена). */
+  addPriceLine(id, price, color) {
+    const line = candleSeries.createPriceLine({
+      price, color: color || C.accent, lineWidth: 1,
+      lineStyle: LWC.LineStyle.Dashed, axisLabelVisible: true, title: ""
+    });
+    priceLines.push({ id, price, color: color || C.accent, line });
+  },
+
+  removePriceLine(id) {
+    const i = priceLines.findIndex(p => p.id === id);
+    if (i < 0) return;
+    candleSeries.removePriceLine(priceLines[i].line);
+    priceLines.splice(i, 1);
+  },
+
+  clearPriceLines() {
+    for (const p of priceLines) candleSeries.removePriceLine(p.line);
+    priceLines = [];
+  },
+
+  /** Текущая раскладка (индикаторы + уровни + построения) для сохранения в C#. */
+  getLayout() {
+    return JSON.stringify({
+      indicators: Object.entries(indicators).map(([id, i]) => ({ id, type: i.type, params: i.params })),
+      priceLines: priceLines.map(p => ({ id: p.id, price: p.price, color: p.color })),
+      drawings: drawings.map(d => ({ id: d.id, type: d.type, p1: d.p1, p2: d.p2 }))
+    });
+  },
+
+  /** Восстановление раскладки, сохранённой ранее getLayout(). */
+  applyLayout(json) {
+    for (const id of Object.keys(indicators)) this.removeIndicator(id);
+    this.clearPriceLines();
+    drawings = [];
+    pending = null;
+    let layout;
+    try { layout = JSON.parse(json); } catch { requestPrimUpdate(); return; }
+    for (const i of layout.indicators || []) this.addIndicator(i.id, i.type, i.params);
+    for (const p of layout.priceLines || []) this.addPriceLine(p.id, p.price, p.color);
+    drawings = (layout.drawings || []).filter(d => d.p1 && d.p2);
+    requestPrimUpdate();
+  }
+};
+
+// ======================= Служебное =======================
+
+/** Точность цены под инструмент: BTC ≠ мемкоин за $0.000012. */
+function autoPrecision() {
+  if (!candles.length) return;
+  const price = candles[candles.length - 1].close;
+  let precision, minMove;
+  if (price >= 1000)      { precision = 1; minMove = 0.1; }
+  else if (price >= 10)   { precision = 2; minMove = 0.01; }
+  else if (price >= 0.1)  { precision = 4; minMove = 0.0001; }
+  else if (price >= 0.001){ precision = 6; minMove = 0.000001; }
+  else                    { precision = 8; minMove = 0.00000001; }
+  candleSeries.applyOptions({ priceFormat: { type: "price", precision, minMove } });
+}
+
+// --- Клики по графику: маршрутизация по активному инструменту ---
+chart.subscribeClick(param => {
+  if (!param.point) return;
+  const price = candleSeries.coordinateToPrice(param.point.y);
+  if (price == null) return;
+
+  // Курсор: старое поведение — Ctrl+клик ставит/снимает уровень
+  if (activeTool === "cursor") {
+    if (!param.sourceEvent || !param.sourceEvent.ctrlKey) return;
+    const near = priceLines.find(p => Math.abs(p.price - price) / price < 0.005);
+    if (near) window.chartApi.removePriceLine(near.id);
+    else window.chartApi.addPriceLine("u" + Date.now(), price, C.accent);
+    notifyLayoutChanged();
+    return;
+  }
+
+  if (activeTool === "hline") {
+    window.chartApi.addPriceLine("u" + Date.now(), price, C.accent);
+    notifyLayoutChanged();
+    return;
+  }
+
+  if (activeTool === "erase") {
+    const i = hitTest(param.point);
+    if (i >= 0) {
+      drawings.splice(i, 1);
+      requestPrimUpdate();
+      notifyLayoutChanged();
+    }
+    return;
+  }
+
+  // Двухточечные фигуры: trend / rect / fib.
+  // Точки привязываем к времени свечи под курсором.
+  if (param.time == null) return;
+  const pt = { time: param.time, price };
+
+  if (!pending) {
+    pending = { id: "d" + Date.now(), type: activeTool, p1: pt, p2: pt };
+    requestPrimUpdate();
+  } else {
+    pending.p2 = pt;
+    drawings.push(pending);
+    pending = null;
+    requestPrimUpdate();
+    notifyLayoutChanged();
+  }
+});
+
+// Превью второй точки за курсором
+chart.subscribeCrosshairMove(param => {
+  if (!pending || !param.point || param.time == null) return;
+  const price = candleSeries.coordinateToPrice(param.point.y);
+  if (price == null) return;
+  pending.p2 = { time: param.time, price };
+  requestPrimUpdate();
+});
+
+/** Скролл влево к началу данных -> просим у C# более старую историю. */
+let loadMoreSent = false;
+chart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+  if (!range || !candles.length) return;
+  if (range.from < 8 && !loadMoreSent) {
+    loadMoreSent = true;
+    post({ type: "loadMoreHistory", symbol, oldestTime: candles[0].time });
+    setTimeout(() => loadMoreSent = false, 3000);
+  }
+});
+
+function post(msg) {
+  if (window.chrome && window.chrome.webview)
+    window.chrome.webview.postMessage(JSON.stringify(msg));
+}
+
+// Сообщаем C#, что страница готова принимать данные
+post({ type: "ready" });
+</script>
+</body>
+</html>

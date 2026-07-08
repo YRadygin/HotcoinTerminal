@@ -75,8 +75,9 @@ public sealed class MarketDataService
             return _lastTickers.TryGetValue(ToSymbol(pairDisplay), out var t) ? t : null;
     }
 
-    /// <summary>Свечи с минутным кэшем (клики по парам туда-сюда не бомбят API).</summary>
-    public async Task<List<Candle>> GetKlinesAsync(string pairDisplay, int stepSeconds)
+    /// <summary>Свечи с минутным кэшем (клики по парам туда-сюда не бомбят API).
+    /// maxCount: для графика берём максимум, что отдаёт биржа (по умолчанию 1000).</summary>
+    public async Task<List<Candle>> GetKlinesAsync(string pairDisplay, int stepSeconds, int maxCount = 1000)
     {
         var key = (Symbol: ToSymbol(pairDisplay), Step: stepSeconds);
         lock (_lock)
@@ -86,9 +87,26 @@ public sealed class MarketDataService
                 return cached.Data;
         }
 
-        var candles = await _client.GetKlinesAsync(key.Symbol, stepSeconds);
+        var candles = await _client.GetKlinesAsync(key.Symbol, stepSeconds, maxCount);
         lock (_lock) _klineCache[key] = (DateTime.UtcNow, candles);
         return candles;
+    }
+
+    /// <summary>
+    /// Все доступные USDT-пары в отображаемом виде ("BTC/USDT") для поиска над графиком —
+    /// независимо от того, прошли ли они фильтры скринера.
+    /// Источник: справочник /v1/common/symbols; если он не загрузился — последние тикеры.
+    /// </summary>
+    public IReadOnlyList<string> GetAllPairs()
+    {
+        lock (_lock)
+        {
+            var source = _onlineUsdtSymbols.Count > 0
+                ? _onlineUsdtSymbols.AsEnumerable()
+                : _lastTickers.Keys.Where(s => s.EndsWith("_usdt"));
+
+            return source.Select(ToDisplay).OrderBy(p => p).ToList();
+        }
     }
 
     public static string ToSymbol(string pairDisplay) =>

@@ -14,6 +14,10 @@ public sealed partial class MainWindow : Window
         SetTitleBar(DragRegion);
 
         RootFrame.Navigate(typeof(AnalyticsPage));
+
+        // WebView2 требует явного закрытия — иначе процессы msedgewebview2.exe
+        // могут пережить приложение
+        Closed += (_, _) => Controls.TvChartControl.CloseAll();
     }
 
     private void OnAnalyticsTabClick(object sender, RoutedEventArgs e)
