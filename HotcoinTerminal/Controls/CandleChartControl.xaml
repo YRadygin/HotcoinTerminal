@@ -1,0 +1,9 @@
+<UserControl
+    x:Class="HotcoinTerminal.Controls.CandleChartControl"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid>
+        <Canvas x:Name="ChartCanvas" />
+    </Grid>
+</UserControl>

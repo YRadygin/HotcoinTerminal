@@ -1,0 +1,39 @@
+<Window
+    x:Class="HotcoinTerminal.Views.DeepAnalysisWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Углублённый AI-анализ">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop Kind="BaseAlt" />
+    </Window.SystemBackdrop>
+
+    <Grid Padding="24">
+        <Border Style="{StaticResource GlassPanel}" VerticalAlignment="Center" MaxWidth="560">
+            <StackPanel Spacing="14">
+                <TextBlock x:Name="HeaderText" Text="Углублённый AI-анализ — BTC/USDT"
+                           FontSize="18" FontWeight="Bold"
+                           Foreground="{StaticResource TextPrimaryBrush}" />
+
+                <TextBlock TextWrapping="Wrap" FontSize="13"
+                           Foreground="{StaticResource TextSecondaryBrush}">
+                    Заглушка окна. Дизайн будет проработан отдельно. Здесь появятся:
+                </TextBlock>
+
+                <StackPanel Spacing="8">
+                    <TextBlock Text="•  Подробные рекомендации по паре (Claude API)" FontSize="13"
+                               Foreground="{StaticResource TextPrimaryBrush}" />
+                    <TextBlock Text="•  Ключевые уровни: вход, стоп-лосс, цели" FontSize="13"
+                               Foreground="{StaticResource TextPrimaryBrush}" />
+                    <TextBlock Text="•  Тайминги удержания позиции" FontSize="13"
+                               Foreground="{StaticResource TextPrimaryBrush}" />
+                    <TextBlock Text="•  Сценарии и риски по текущему сетапу" FontSize="13"
+                               Foreground="{StaticResource TextPrimaryBrush}" />
+                </StackPanel>
+
+                <Button Content="Закрыть" Style="{StaticResource PillAccentButton}"
+                        HorizontalAlignment="Left" MinWidth="140" Click="OnCloseClick" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>

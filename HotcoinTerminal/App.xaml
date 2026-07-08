@@ -1,0 +1,85 @@
+<Application
+    x:Class="HotcoinTerminal.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    RequestedTheme="Dark">
+
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- ===== Палитра ===== -->
+            <Color x:Key="ColorUp">#2DD4BF</Color>
+            <Color x:Key="ColorDown">#F87171</Color>
+            <Color x:Key="ColorAccent">#8B7CF6</Color>
+
+            <SolidColorBrush x:Key="UpBrush" Color="{StaticResource ColorUp}" />
+            <SolidColorBrush x:Key="DownBrush" Color="{StaticResource ColorDown}" />
+            <SolidColorBrush x:Key="AccentPurpleBrush" Color="{StaticResource ColorAccent}" />
+            <SolidColorBrush x:Key="TextPrimaryBrush" Color="#E8EEF6" />
+            <SolidColorBrush x:Key="TextSecondaryBrush" Color="#96A2B6" />
+            <SolidColorBrush x:Key="TextTertiaryBrush" Color="#5F6B7D" />
+            <SolidColorBrush x:Key="PanelStrokeBrush" Color="#1FFFFFFF" />
+
+            <!-- Полупрозрачная «стеклянная» подложка панелей (акрил поверх Mica) -->
+            <AcrylicBrush x:Key="GlassPanelBrush"
+                          TintColor="#171D2A"
+                          TintOpacity="0.45"
+                          TintLuminosityOpacity="0.55"
+                          FallbackColor="#171D2A" />
+
+            <AcrylicBrush x:Key="GlassPanelSubtleBrush"
+                          TintColor="#131824"
+                          TintOpacity="0.35"
+                          TintLuminosityOpacity="0.45"
+                          FallbackColor="#131824" />
+
+            <!-- ===== Стили ===== -->
+
+            <!-- Стеклянная панель со скруглением -->
+            <Style x:Key="GlassPanel" TargetType="Border">
+                <Setter Property="Background" Value="{StaticResource GlassPanelBrush}" />
+                <Setter Property="BorderBrush" Value="{StaticResource PanelStrokeBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="16" />
+                <Setter Property="Padding" Value="16" />
+            </Style>
+
+            <!-- Чип-переключатель (стратегии, таймфреймы) -->
+            <Style x:Key="ChipToggle" TargetType="ToggleButton">
+                <Setter Property="CornerRadius" Value="14" />
+                <Setter Property="Height" Value="30" />
+                <Setter Property="Padding" Value="14,0" />
+                <Setter Property="FontSize" Value="12.5" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="BorderBrush" Value="{StaticResource PanelStrokeBrush}" />
+                <Setter Property="Background" Value="#10FFFFFF" />
+            </Style>
+
+            <!-- Округлая акцентная кнопка -->
+            <Style x:Key="PillAccentButton" TargetType="Button">
+                <Setter Property="CornerRadius" Value="19" />
+                <Setter Property="Height" Value="38" />
+                <Setter Property="HorizontalAlignment" Value="Stretch" />
+                <Setter Property="Background" Value="{StaticResource AccentPurpleBrush}" />
+                <Setter Property="Foreground" Value="#0D1017" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+            </Style>
+
+            <!-- Заголовок панели -->
+            <Style x:Key="PanelTitle" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="16" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+            </Style>
+
+            <!-- Подпись/вторичный текст -->
+            <Style x:Key="CaptionText" TargetType="TextBlock">
+                <Setter Property="FontSize" Value="11.5" />
+                <Setter Property="Foreground" Value="{StaticResource TextTertiaryBrush}" />
+            </Style>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>
