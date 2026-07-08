@@ -22,6 +22,9 @@ public sealed class SignalRow
     public int Score { get; init; }
     public double ChangePercent { get; init; }
 
+    /// <summary>Обоснование сигнала от стратегии (для окна AI-анализа).</summary>
+    public string Note { get; init; } = "";
+
     public string ChangeText => (ChangePercent >= 0 ? "+" : "") + ChangePercent.ToString("0.0") + "%";
 
     public SolidColorBrush ChangeBrush =>

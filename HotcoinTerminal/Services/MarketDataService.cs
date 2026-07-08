@@ -1,13 +1,14 @@
 using HotcoinTerminal.Models;
 using HotcoinTerminal.Services.Api;
+using HotcoinTerminal.Services.Strategies;
 
 namespace HotcoinTerminal.Services;
 
 /// <summary>
-/// Мозг скринера. Крутит фоновый цикл: раз в RefreshInterval забирает тикеры по всем парам
-/// одним запросом, фильтрует по ликвидности/спреду, размечает эвристикой v0 и публикует
-/// событие SignalsUpdated. UI подписывается и сам маршалит в свой поток.
-/// Позже эвристику v0 заменит движок стратегий (IStrategy).
+/// Мозг скринера. Цикл: раз в RefreshInterval забирает тикеры одним запросом,
+/// фильтрует по ликвидности/спреду, дешёвым пре-скорингом отбирает топ-кандидатов,
+/// и только для них движок стратегий (StrategyEngine) подтягивает часовые свечи
+/// и считает настоящие индикаторы. Итог публикуется событием SignalsUpdated.
 /// </summary>
 public sealed class MarketDataService
 {
@@ -17,10 +18,12 @@ public sealed class MarketDataService
     public static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(15);
     private const double MinQuoteVolumeUsd = 500_000; // фильтр ликвидности, $/сутки
     private const double MaxSpreadPercent = 0.5;      // фильтр спреда, %
+    private const int MaxDeepCandidates = 40;         // скольким парам грузим свечи за цикл
     private const int TopN = 60;                      // строк в скринере
     private static readonly TimeSpan KlineCacheTtl = TimeSpan.FromSeconds(60);
 
     private readonly HotcoinPublicClient _client = new();
+    private readonly StrategyEngine _engine;
 
     private HashSet<string> _onlineUsdtSymbols = new();
     private readonly Dictionary<string, TickerInfo> _lastTickers = new();
@@ -37,7 +40,12 @@ public sealed class MarketDataService
     /// <summary>Ошибка цикла (текст для статус-бара).</summary>
     public event Action<string>? RefreshFailed;
 
-    private MarketDataService() { }
+    private MarketDataService()
+    {
+        // Движку отдаём «сырой» метод клиента: у движка свой кэш (TTL 5 мин),
+        // а _klineCache с TTL 60с остаётся для графика (там нужна свежесть).
+        _engine = new StrategyEngine((symbol, step, ct) => _client.GetKlinesAsync(symbol, step, ct: ct));
+    }
 
     // ---------------- Публичный интерфейс ----------------
 
@@ -128,9 +136,16 @@ public sealed class MarketDataService
         try
         {
             var tickers = await _client.GetAllTickersAsync();
-            var rows = BuildSignals(tickers);
+            var candidates = SelectCandidates(tickers);
+            var rows = await _engine.EvaluateAsync(candidates);
+
             _consecutiveFailures = 0;
-            SignalsUpdated?.Invoke(rows, DateTime.Now);
+            SignalsUpdated?.Invoke(
+                rows.OrderByDescending(r => r.Score)
+                    .ThenByDescending(r => Math.Abs(r.ChangePercent))
+                    .Take(TopN)
+                    .ToList(),
+                DateTime.Now);
         }
         catch (Exception ex)
         {
@@ -139,14 +154,20 @@ public sealed class MarketDataService
         }
     }
 
-    // ---------------- Конвейер скринера ----------------
+    // ---------------- Отбор кандидатов (дешёвый этап, только тикеры) ----------------
 
-    private List<SignalRow> BuildSignals(List<TickerInfo> tickers)
+    /// <summary>
+    /// Фильтр ликвидности/спреда + пре-скоринг по тикеру.
+    /// В движок уходят максимум MaxDeepCandidates самых «интересных» пар —
+    /// это ограничивает число запросов свечей (у движка ещё и кэш 5 мин).
+    /// </summary>
+    private List<(string Symbol, TickerInfo Ticker, double VolumeAnomaly)> SelectCandidates(
+        List<TickerInfo> tickers)
     {
         HashSet<string> online;
         lock (_lock) online = _onlineUsdtSymbols;
 
-        var rows = new List<SignalRow>();
+        var pre = new List<(string Symbol, TickerInfo Ticker, double Anomaly, double PreScore)>();
 
         foreach (var t in tickers)
         {
@@ -160,15 +181,16 @@ public sealed class MarketDataService
             if (t.QuoteVolume < MinQuoteVolumeUsd) continue;
             if (t.SpreadPercent > MaxSpreadPercent) continue;
 
-            var (strategy, score) = ClassifyV0(t, VolumeAnomaly(symbol, t.QuoteVolume));
+            double anomaly = VolumeAnomaly(symbol, t.QuoteVolume);
 
-            rows.Add(new SignalRow
-            {
-                Pair = ToDisplay(symbol),
-                Strategy = strategy,
-                Score = score,
-                ChangePercent = t.Change
-            });
+            // Пре-скоринг: движение + аномалия оборота + ликвидность.
+            // Это не сигнал, а приоритет очереди на глубокий анализ.
+            double preScore =
+                Math.Min(Math.Abs(t.Change), 20) * 2.0 +
+                Math.Min(Math.Max(anomaly - 1.0, 0) * 10, 20) +
+                Math.Min(Math.Log10(Math.Max(t.QuoteVolume, 1)) * 2, 16);
+
+            pre.Add((symbol, t, anomaly, preScore));
         }
 
         lock (_lock)
@@ -177,38 +199,20 @@ public sealed class MarketDataService
             foreach (var t in tickers) _lastTickers[t.Symbol.ToLowerInvariant()] = t;
         }
 
-        return rows
-            .OrderByDescending(r => r.Score)
-            .ThenByDescending(r => Math.Abs(r.ChangePercent))
-            .Take(TopN)
+        var movers = pre
+     .OrderByDescending(p => p.PreScore)
+     .Take(25);
+
+        var quiet = pre
+            .Where(p => Math.Abs(p.Ticker.Change) <= 3.0)
+            .OrderByDescending(p => p.Ticker.QuoteVolume)
+            .Take(15);
+
+        return movers.Concat(quiet)
+            .DistinctBy(p => p.Symbol)
+            .Take(MaxDeepCandidates)
+            .Select(p => (p.Symbol, p.Ticker, p.Anomaly))
             .ToList();
-    }
-
-    /// <summary>
-    /// ЭВРИСТИКА v0 (заглушка до движка стратегий): разметка по одному тикеру.
-    /// Сильное падение -> кандидат Mean Rev, рост на аномальном объёме -> Momentum,
-    /// узкий дневной диапазон -> Grid.
-    /// </summary>
-    private static (string Strategy, int Score) ClassifyV0(TickerInfo t, double volumeAnomaly)
-    {
-        double ch = t.Change;
-        double rangePct = t.Last > 0 && t.High > t.Low ? (t.High - t.Low) / t.Last * 100.0 : 0;
-
-        if (ch <= -4)
-        {
-            int score = 55 + (int)Math.Min(Math.Abs(ch) * 3, 30);
-            return ("Mean Rev", Math.Min(score, 95));
-        }
-
-        if (ch >= 4)
-        {
-            int score = 55 + (int)Math.Min(ch * 2, 25) + (volumeAnomaly > 1.5 ? 10 : 0);
-            return ("Momentum", Math.Min(score, 95));
-        }
-
-        // Боковик: чем уже диапазон при живом объёме, тем интереснее для сетки
-        int gridScore = (int)Math.Clamp(68 - rangePct * 4, 40, 72);
-        return ("Grid", gridScore);
     }
 
     /// <summary>Отношение текущего оборота к среднему за последние циклы (внутри сессии).</summary>
