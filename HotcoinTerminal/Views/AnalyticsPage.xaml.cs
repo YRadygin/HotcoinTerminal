@@ -10,6 +10,7 @@ namespace HotcoinTerminal.Views;
 public sealed partial class AnalyticsPage : Page
 {
     private readonly ObservableCollection<SignalRow> _visibleSignals = new();
+    private readonly ObservableCollection<EventItem> _events = new();
     private IReadOnlyList<SignalRow> _allSignals = Array.Empty<SignalRow>();
     private readonly HashSet<string> _activeStrategies = new() { "Grid", "Mean Rev", "Momentum", "События" };
     private string _searchText = "";
@@ -21,12 +22,13 @@ public sealed partial class AnalyticsPage : Page
         InitializeComponent();
 
         SignalsList.ItemsSource = _visibleSignals;
-        EventsList.ItemsSource = StubDataService.GenerateEvents(); // лента событий — следующий этап
+        EventsList.ItemsSource = _events; // лента событий 
 
         Loaded += (_, _) =>
         {
             if (!_subscribed)
             {
+                MarketDataService.Instance.EventsUpdated += OnEventsUpdated;
                 MarketDataService.Instance.SignalsUpdated += OnSignalsUpdated;
                 MarketDataService.Instance.RefreshFailed += OnRefreshFailed;
                 _subscribed = true;
@@ -38,12 +40,23 @@ public sealed partial class AnalyticsPage : Page
         {
             if (_subscribed)
             {
+                MarketDataService.Instance.EventsUpdated -= OnEventsUpdated;
                 MarketDataService.Instance.SignalsUpdated -= OnSignalsUpdated;
                 MarketDataService.Instance.RefreshFailed -= OnRefreshFailed;
                 _subscribed = false;
             }
         };
     }
+
+    private void OnEventsUpdated(IReadOnlyList<EventItem> events)
+    {
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            _events.Clear();
+            foreach (var e in events) _events.Add(e);
+        });
+    }
+
 
     // ---------- Приём данных из MarketDataService (фоновый поток -> UI-поток) ----------
 

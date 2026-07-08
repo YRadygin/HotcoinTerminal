@@ -24,6 +24,7 @@ public sealed class MarketDataService
 
     private readonly HotcoinPublicClient _client = new();
     private readonly StrategyEngine _engine;
+    private readonly EventFeedService _eventFeed = new();
 
     private HashSet<string> _onlineUsdtSymbols = new();
     private readonly Dictionary<string, TickerInfo> _lastTickers = new();
@@ -39,6 +40,9 @@ public sealed class MarketDataService
 
     /// <summary>Ошибка цикла (текст для статус-бара).</summary>
     public event Action<string>? RefreshFailed;
+
+    /// <summary>Лента событий скринера (новые сверху). Подписчик сам уходит в UI-поток.</summary>
+    public event Action<IReadOnlyList<EventItem>>? EventsUpdated;
 
     private MarketDataService()
     {
@@ -139,13 +143,14 @@ public sealed class MarketDataService
             var candidates = SelectCandidates(tickers);
             var rows = await _engine.EvaluateAsync(candidates);
 
+            var top = rows.OrderByDescending(r => r.Score)
+                          .ThenByDescending(r => Math.Abs(r.ChangePercent))
+                          .Take(TopN)
+                          .ToList();
+
             _consecutiveFailures = 0;
-            SignalsUpdated?.Invoke(
-                rows.OrderByDescending(r => r.Score)
-                    .ThenByDescending(r => Math.Abs(r.ChangePercent))
-                    .Take(TopN)
-                    .ToList(),
-                DateTime.Now);
+            SignalsUpdated?.Invoke(top, DateTime.Now);
+            EventsUpdated?.Invoke(_eventFeed.Process(top, DateTime.Now));
         }
         catch (Exception ex)
         {
@@ -199,9 +204,11 @@ public sealed class MarketDataService
             foreach (var t in tickers) _lastTickers[t.Symbol.ToLowerInvariant()] = t;
         }
 
+        // 25 слотов «движущимся» + 15 слотов тихим ликвидным парам (кандидаты Grid),
+        // иначе весь бюджет глубокого анализа съедают пары с большим |change|
         var movers = pre
-     .OrderByDescending(p => p.PreScore)
-     .Take(25);
+            .OrderByDescending(p => p.PreScore)
+            .Take(25);
 
         var quiet = pre
             .Where(p => Math.Abs(p.Ticker.Change) <= 3.0)

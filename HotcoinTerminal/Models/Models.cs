@@ -46,16 +46,14 @@ public sealed class EventItem
 
     public SolidColorBrush TagBrush => Tag switch
     {
-        "Momentum" => Palette.UpBrush,
-        "Mean Rev" => Palette.UpBrush,
+        "Momentum" or "Mean Rev" or "Grid" => Palette.UpBrush,
         "События" => Palette.AccentBrush,
-        _ => Palette.DownBrush
+        _ => Palette.DownBrush,
     };
 
     public SolidColorBrush TagFaintBrush => Tag switch
     {
-        "Momentum" => Palette.UpFaintBrush,
-        "Mean Rev" => Palette.UpFaintBrush,
+        "Momentum" or "Mean Rev" or "Grid" => Palette.UpFaintBrush,
         "События" => Palette.AccentFaintBrush,
         _ => Palette.DownFaintBrush
     };
